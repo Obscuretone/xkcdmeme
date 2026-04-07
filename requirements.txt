@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+Pillow
+geopandas
+shapely
+requests
+piexif
+httpx
+pytest
