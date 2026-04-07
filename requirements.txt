@@ -8,3 +8,8 @@ requests
 piexif
 httpx
 pytest
+pytest-asyncio
+transformers
+torch
+torchvision
+timm

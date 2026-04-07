@@ -6,13 +6,17 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from shapely.geometry import Point
+from transformers import pipeline
 
-app = FastAPI(title="National Park Photo Checker")
+app = FastAPI(title="National Park & Bird Photo Checker")
 
-# --- Constants & Data Loading ---
 # --- Constants & Data Loading ---
 PARKS_PATH = "nps_boundary.geojson"
 parks_gdf = None
+
+# Initialize bird classifier (loads on startup)
+print("Loading image classifier model...")
+classifier = pipeline("image-classification", model="google/vit-base-patch16-224")
 
 def load_parks_data():
     global parks_gdf
@@ -83,61 +87,71 @@ def get_coordinates(exif_data):
         lon = get_decimal_from_dms(lon_dms, lon_ref)
         return lat, lon
     except Exception as e:
-        print(f"Error parsing GPS data: {e}")
         return None
+
+def detect_bird(image):
+    """Detect if the image contains a bird using the classifier."""
+    results = classifier(image)
+    # Check if 'bird' is in any of the top labels
+    for res in results:
+        label = res['label'].lower()
+        if 'bird' in label or any(bird_type in label for bird_type in ['jay', 'robin', 'sparrow', 'eagle', 'hawk', 'owl', 'penguin', 'duck', 'goose', 'swan', 'pigeon', 'finch', 'parrot']):
+            return True, res['score']
+    return False, results[0]['score']
 
 # --- API Endpoints ---
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "National Park Photo Checker is active."}
+    return {"status": "ok", "message": "National Park & Bird Photo Checker is active."}
 
-@app.post("/check-park")
-async def check_park(file: UploadFile = File(...)):
+@app.post("/check-photo")
+async def check_photo(file: UploadFile = File(...)):
     # Read image
     try:
         image_bytes = await file.read()
         image = Image.open(io.BytesIO(image_bytes))
+        # Ensure RGB for the classifier
+        if image.mode != "RGB":
+            image = image.convert("RGB")
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid image file.")
 
-    # Extract coordinates
+    # 1. Bird Check
+    is_bird_detected, confidence = detect_bird(image)
+
+    # 2. Location Check
     exif_data = get_exif_data(image)
     coords = get_coordinates(exif_data)
     
-    if not coords:
-        return {
-            "success": False,
-            "error": "No GPS metadata found in image."
-        }
-    
-    lat, lon = coords
-    
-    # Check against National Parks
-    if parks_gdf is None or parks_gdf.empty:
-        return {
-            "success": False,
-            "error": "National Park data is not available."
-        }
-    
-    point = Point(lon, lat)  # GeoJSON is [lon, lat]
-    matches = parks_gdf[parks_gdf.geometry.contains(point)]
-    
-    if not matches.empty:
-        name_col = 'UNIT_NAME' if 'UNIT_NAME' in matches.columns else 'NAME'
-        park_name = matches.iloc[0].get(name_col, 'Unknown National Park')
-        return {
-            "success": True,
-            "is_in_park": True,
-            "park_name": park_name,
-            "coordinates": {"lat": lat, "lon": lon}
-        }
-    
-    return {
-        "success": True,
+    location_result = {
         "is_in_park": False,
         "park_name": None,
-        "coordinates": {"lat": lat, "lon": lon}
+        "coordinates": None,
+        "error": None
+    }
+
+    if not coords:
+        location_result["error"] = "No GPS metadata found in image."
+    else:
+        lat, lon = coords
+        location_result["coordinates"] = {"lat": lat, "lon": lon}
+        
+        if parks_gdf is None or parks_gdf.empty:
+            location_result["error"] = "National Park data is not available."
+        else:
+            point = Point(lon, lat)
+            matches = parks_gdf[parks_gdf.geometry.contains(point)]
+            if not matches.empty:
+                name_col = 'UNIT_NAME' if 'UNIT_NAME' in matches.columns else 'NAME'
+                location_result["is_in_park"] = True
+                location_result["park_name"] = matches.iloc[0].get(name_col, 'Unknown National Park')
+
+    return {
+        "success": True,
+        "is_bird": is_bird_detected,
+        "bird_confidence": float(confidence),
+        "location": location_result
     }
 
 if __name__ == "__main__":
