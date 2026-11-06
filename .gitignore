@@ -11,3 +11,14 @@ nps_boundary.zip
 .env
 venv/
 env/
+
+# Local files and installed dependencies
+.DS_Store
+.venv/
+node_modules/
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.nira/*.db
+.nira/*.db-*
